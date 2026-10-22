@@ -445,10 +445,17 @@ fn read_file_path(lines: &ScriptLineProvider, line: &mut ScriptCharProvider) -> 
     if path.is_empty() {
         compilation_error(lines, line, "missing file path")
     } else {
-        os_string_from_bytes(path).map(PathBuf::from).map_err(|e| {
-            compilation_error::<PathBuf>(lines, line, format!("invalid characters file path: {e}"))
+        // Skua: `/tmp/x`, `/c/x`, `/dev/null` as Git Bash's MSYS sed sees them.
+        os_string_from_bytes(path)
+            .map(|p| crate::sed::skua_windows::script_path(PathBuf::from(p)))
+            .map_err(|e| {
+                compilation_error::<PathBuf>(
+                    lines,
+                    line,
+                    format!("invalid characters file path: {e}"),
+                )
                 .unwrap_err()
-        })
+            })
     }
 }
 

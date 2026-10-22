@@ -20,6 +20,7 @@ pub mod named_writer;
 pub mod processor;
 pub mod script_char_provider;
 pub mod script_line_provider;
+pub mod skua_windows;
 
 use crate::sed::command::{ByteSpace, CharacterMode, ProcessingContext};
 use crate::sed::compiler::compile;

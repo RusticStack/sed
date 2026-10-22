@@ -35,11 +35,15 @@ pub struct NamedWriter {
 impl NamedWriter {
     /// Create a new writer, truncate the file, and register it for flushing.
     pub fn new(path: PathBuf, location: ScriptLocation) -> UResult<Rc<RefCell<Self>>> {
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)
+        // Skua: `/dev/stdout` and `/dev/stderr` on Windows are the standard streams.
+        let file = crate::sed::skua_windows::std_stream(&path)
+            .unwrap_or_else(|| {
+                OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&path)
+            })
             .map_err(|e| {
                 runtime_error::<()>(&location, format!("creating file {}: {}", path.quote(), e))
                     .unwrap_err()

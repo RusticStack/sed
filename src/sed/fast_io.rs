@@ -142,6 +142,8 @@ impl ReadLineCursor {
         // strip it if you don’t want to expose it to the caller
         if has_newline {
             self.buffer.pop();
+            // Skua: text-mode input on Windows, as Git Bash's MSYS sed reads it.
+            crate::sed::skua_windows::strip_cr(&mut self.buffer);
         }
         let line = std::mem::take(&mut self.buffer);
         Ok(Some((line, has_newline)))

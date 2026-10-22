@@ -60,7 +60,15 @@ impl NamedReader {
                 self.state = State::Exhausted;
                 None
             }
-            Ok(_) => Some(line),
+            Ok(_) => {
+                // Skua: text-mode input on Windows (`\r\n` reads as `\n`).
+                if line.ends_with(b"\n") {
+                    line.pop();
+                    crate::sed::skua_windows::strip_cr(&mut line);
+                    line.push(b'\n');
+                }
+                Some(line)
+            }
         }
     }
 }
