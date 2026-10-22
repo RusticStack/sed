@@ -171,3 +171,12 @@ unnested_or_patterns = "allow"
 restriction = { level = "allow", priority = -1 }
 cognitive_complexity = "warn"
 redundant_clone = "warn"
+
+# Skua Bash (M3-SH5C): the skua-bash build checks this repo out under skua-bash's own Cargo
+# workspace, so it must be a workspace root of its own.
+# (sed is one already: [workspace.dependencies] above.)
+
+# Skua Bash (M3-SH5C): uucore 0.12 with the Windows broken-pipe hook (exit 141), from the
+# skua-uucore-0.12 branch of RusticStack/coreutils.
+[patch.crates-io]
+uucore = { git = "https://github.com/RusticStack/coreutils", rev = "509f47988320446e9d15bc1344278e3c0c943c78" }
