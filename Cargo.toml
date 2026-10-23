@@ -179,4 +179,4 @@ redundant_clone = "warn"
 # Skua Bash (M3-SH5C): uucore 0.12 with the Windows broken-pipe hook (exit 141), from the
 # skua-uucore-0.12 branch of RusticStack/coreutils.
 [patch.crates-io]
-uucore = { git = "https://github.com/RusticStack/coreutils", rev = "509f47988320446e9d15bc1344278e3c0c943c78" }
+uucore = { git = "https://github.com/RusticStack/coreutils", rev = "2a7cb9334ab9bf7d70c694bf91f2886363f2d84f" }
