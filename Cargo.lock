@@ -1566,7 +1566,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "uucore"
 version = "0.12.0"
-source = "git+https://github.com/RusticStack/coreutils?rev=2a7cb9334ab9bf7d70c694bf91f2886363f2d84f#2a7cb9334ab9bf7d70c694bf91f2886363f2d84f"
+source = "git+https://github.com/RusticStack/coreutils?rev=5a6f1ff8e7b29c9ba829d8e2c34d48755860483f#5a6f1ff8e7b29c9ba829d8e2c34d48755860483f"
 dependencies = [
  "ariadne",
  "clap",
@@ -1593,7 +1593,7 @@ dependencies = [
 [[package]]
 name = "uucore_procs"
 version = "0.12.0"
-source = "git+https://github.com/RusticStack/coreutils?rev=2a7cb9334ab9bf7d70c694bf91f2886363f2d84f#2a7cb9334ab9bf7d70c694bf91f2886363f2d84f"
+source = "git+https://github.com/RusticStack/coreutils?rev=5a6f1ff8e7b29c9ba829d8e2c34d48755860483f#5a6f1ff8e7b29c9ba829d8e2c34d48755860483f"
 dependencies = [
  "proc-macro2",
  "quote",

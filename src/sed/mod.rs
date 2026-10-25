@@ -35,7 +35,8 @@ use uucore::error::{UResult, USimpleError, UUsageError};
 use uucore::format_usage;
 
 const ABOUT: &str = "Stream editor for filtering and transforming text (part of uutils)";
-const USAGE: &str = "sed [OPTION]... [script] [file]...";
+// Skua: GNU sed's usage line, as Git Bash's sed prints it.
+const USAGE: &str = "sed [OPTION]... {script-only-if-no-other-script} [input-file]...";
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (uutils)");
 
 #[uucore::main]
@@ -183,6 +184,11 @@ pub fn uu_app() -> Command {
         .version(VERSION)
         .about(ABOUT)
         .override_usage(format_usage(USAGE))
+        // Skua: the usage line first, as Git Bash's sed `--help` starts.
+        .help_template("{usage-heading} {usage}
+{about}
+
+{all-args}{after-help}")
         .args_override_self(true)
         .infer_long_args(true)
         .args([
