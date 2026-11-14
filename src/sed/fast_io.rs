@@ -117,15 +117,29 @@ impl<'a> MmapLineCursor<'a> {
 pub struct ReadLineCursor {
     reader: Box<dyn BufRead>,
     buffer: Vec<u8>,
+    /// Capacity for the next line buffer: the last line's length, so that
+    /// reading a line takes one allocation instead of a growth chain.
+    next_capacity: usize,
 }
+
+/// Read buffer size. The default 8 KiB turns a large file into a long
+/// run of small `ReadFile` calls.
+const READ_BUF_SIZE: usize = 128 * 1024;
+
+/// Output buffer size (Rust's default is 8 KiB).
+const WRITE_BUF_SIZE: usize = 128 * 1024;
+
+/// Initial line buffer capacity.
+const LINE_CAPACITY_HINT: usize = 128;
 
 impl ReadLineCursor {
     /// Construct from anything that implements `Read`.
     fn new<R: Read + 'static>(r: R) -> Self {
-        let buf = BufReader::new(r);
+        let buf = BufReader::with_capacity(READ_BUF_SIZE, r);
         Self {
             reader: Box::new(buf),
-            buffer: Vec::new(),
+            buffer: Vec::with_capacity(LINE_CAPACITY_HINT),
+            next_capacity: LINE_CAPACITY_HINT,
         }
     }
 
@@ -145,7 +159,8 @@ impl ReadLineCursor {
             // Skua: text-mode input on Windows, as Git Bash's MSYS sed reads it.
             crate::sed::skua_windows::strip_cr(&mut self.buffer);
         }
-        let line = std::mem::take(&mut self.buffer);
+        self.next_capacity = self.buffer.len().max(LINE_CAPACITY_HINT).min(1 << 20) + 1;
+        let line = std::mem::replace(&mut self.buffer, Vec::with_capacity(self.next_capacity));
         Ok(Some((line, has_newline)))
     }
 
@@ -456,8 +471,7 @@ pub enum LineReader<'a> {
 /// Return a LineReader that uses the ReadInput method fot the specified file.
 fn line_reader_read_input(file: File) -> io::Result<LineReader<'static>> {
     let boxed: Box<dyn Read> = Box::new(file);
-    let reader = BufReader::new(boxed);
-    Ok(LineReader::ReadInput(ReadLineCursor::new(reader)))
+    Ok(LineReader::ReadInput(ReadLineCursor::new(boxed)))
 }
 
 impl<'a> LineReader<'a> {
@@ -467,8 +481,7 @@ impl<'a> LineReader<'a> {
         if path.as_os_str() == "-" {
             let stdin = io::stdin();
             let boxed: Box<dyn Read> = Box::new(stdin.lock());
-            let reader = BufReader::new(boxed);
-            return Ok(LineReader::ReadInput(ReadLineCursor::new(reader)));
+            return Ok(LineReader::ReadInput(ReadLineCursor::new(boxed)));
         }
 
         let file = File::open(path)?;
@@ -628,7 +641,7 @@ impl OutputBuffer {
     #[cfg(not(unix))]
     pub fn new(w: Box<dyn OutputWrite + 'static>) -> Self {
         Self {
-            out: BufWriter::new(w),
+            out: BufWriter::with_capacity(WRITE_BUF_SIZE, w),
             pending_newline: false,
             #[cfg(test)]
             low_level_flushes: 0,
@@ -644,7 +657,7 @@ impl OutputBuffer {
             MAX_PENDING_WRITE_NON_FILE
         };
         Self {
-            out: BufWriter::new(w),
+            out: BufWriter::with_capacity(WRITE_BUF_SIZE, w),
             fast_copy,
             max_pending_write,
             mmap_chunk: None,

@@ -90,34 +90,39 @@ enum AnchoredMatch {
 #[derive(Clone, Debug)]
 /// A fast Regex-like matcher for literal strings using memchr:memmem
 pub struct LiteralMatcher {
-    needle: Arc<[u8]>,         // Bytes without any anchors; cheap to clone
-    match_type: AnchoredMatch, // Type of anchoring specified
+    needle: Arc<[u8]>,               // Bytes without any anchors; cheap to clone
+    match_type: AnchoredMatch,       // Type of anchoring specified
+    finder: memmem::Finder<'static>, // Prebuilt searcher: one set-up, not one per line
 }
 
 impl LiteralMatcher {
     /// Construct a new matcher based on a needle possible with anchors.
     pub fn new(needle: impl AsRef<[u8]>) -> Self {
         let needle_bytes = needle.as_ref();
-        if needle_bytes[0] == b'^' && needle_bytes[needle_bytes.len() - 1] == b'$' {
-            LiteralMatcher {
-                match_type: AnchoredMatch::Both,
-                needle: needle_bytes[1..needle_bytes.len() - 1].into(),
-            }
-        } else if needle_bytes[0] == b'^' {
-            LiteralMatcher {
-                match_type: AnchoredMatch::Begin,
-                needle: needle_bytes[1..needle_bytes.len()].into(),
-            }
-        } else if needle_bytes[needle_bytes.len() - 1] == b'$' {
-            LiteralMatcher {
-                match_type: AnchoredMatch::End,
-                needle: needle_bytes[0..needle_bytes.len() - 1].into(),
-            }
-        } else {
-            LiteralMatcher {
-                match_type: AnchoredMatch::Free,
-                needle: needle_bytes.into(),
-            }
+        let (match_type, needle): (AnchoredMatch, Arc<[u8]>) =
+            if needle_bytes[0] == b'^' && needle_bytes[needle_bytes.len() - 1] == b'$' {
+                (
+                    AnchoredMatch::Both,
+                    needle_bytes[1..needle_bytes.len() - 1].into(),
+                )
+            } else if needle_bytes[0] == b'^' {
+                (
+                    AnchoredMatch::Begin,
+                    needle_bytes[1..needle_bytes.len()].into(),
+                )
+            } else if needle_bytes[needle_bytes.len() - 1] == b'$' {
+                (
+                    AnchoredMatch::End,
+                    needle_bytes[0..needle_bytes.len() - 1].into(),
+                )
+            } else {
+                (AnchoredMatch::Free, needle_bytes.into())
+            };
+        let finder = memmem::Finder::new(&*needle).into_owned();
+        LiteralMatcher {
+            needle,
+            match_type,
+            finder,
         }
     }
 
@@ -148,7 +153,7 @@ impl LiteralMatcher {
                     None
                 }
             }
-            AnchoredMatch::Free => memmem::find(haystack, &self.needle),
+            AnchoredMatch::Free => self.finder.find(haystack),
         }
     }
 
@@ -163,6 +168,20 @@ impl LiteralMatcher {
             let end = start + self.needle.len();
             (start, end, &haystack[start..end])
         })
+    }
+
+    /// The `(start, end)` span of every match, without any allocation.
+    fn spans<'t>(&'t self, haystack: &'t [u8]) -> FindMatches<'t> {
+        match self.match_type {
+            AnchoredMatch::Free => FindMatches::Free {
+                hits: self.finder.find_iter(haystack),
+                len: self.needle.len(),
+            },
+            _ => FindMatches::Once(
+                self.anchored_find(haystack)
+                    .map(|start| (start, start + self.needle.len())),
+            ),
+        }
     }
 
     /// Return all positions and contents of the matched needle.
@@ -180,7 +199,7 @@ impl LiteralMatcher {
             }
             AnchoredMatch::Free => {
                 // Multiple potential matches
-                Box::new(memmem::find_iter(haystack, needle).map(move |start| {
+                Box::new(self.finder.find_iter(haystack).map(move |start| {
                     let end = start + nlen;
                     (start, end, &haystack[start..end])
                 }))
@@ -319,6 +338,22 @@ impl Regex {
         }
     }
 
+    /// Whether [`Self::find_spans`] is available.
+    pub fn has_spans(&self) -> bool {
+        matches!(self, Regex::Literal(_) | Regex::Byte(_))
+    }
+
+    /// The spans of every match, for substitutions that never look at a
+    /// capture group. `None` for the engines that cannot do it cheaper than
+    /// through `captures_iter` (back-references).
+    pub fn find_spans<'t>(&'t self, chunk: &'t IOChunk) -> Option<FindMatches<'t>> {
+        match self {
+            Regex::Literal(m) => Some(m.spans(chunk.as_bytes())),
+            Regex::Byte(re) => Some(FindMatches::Byte(re.find_iter(chunk.as_bytes()))),
+            Regex::Fancy(_) | Regex::FancyBytes(_) => None,
+        }
+    }
+
     /// Return an iterator over capture groups.
     pub fn captures_iter<'t>(&'t self, chunk: &'t IOChunk) -> UResult<CaptureMatches<'t>> {
         match self {
@@ -426,6 +461,28 @@ impl Regex {
                 Ok(None) => Ok(None),
                 Err(e) => Err(USimpleError::new(2, e.to_string())),
             },
+        }
+    }
+}
+
+/// Spans of the matches of a literal or byte regex.
+pub enum FindMatches<'t> {
+    Free {
+        hits: memmem::FindIter<'t, 't>,
+        len: usize,
+    },
+    Once(Option<(usize, usize)>),
+    Byte(regex::bytes::Matches<'t, 't>),
+}
+
+impl Iterator for FindMatches<'_> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            FindMatches::Free { hits, len } => hits.next().map(|start| (start, start + *len)),
+            FindMatches::Once(span) => span.take(),
+            FindMatches::Byte(it) => it.next().map(|m| (m.start(), m.end())),
         }
     }
 }

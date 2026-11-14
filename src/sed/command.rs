@@ -210,6 +210,18 @@ impl ReplacementTemplate {
         Ok(result)
     }
 
+    /// Append the replacement for a whole match `m` to `out`. Only for
+    /// templates that use no capture group.
+    pub fn append_match(&self, m: &[u8], out: &mut Vec<u8>) {
+        for part in &self.parts {
+            match part {
+                ReplacementPart::Literal(s) => out.extend_from_slice(s),
+                ReplacementPart::WholeMatch => out.extend_from_slice(m),
+                ReplacementPart::Group(_) => panic!("unexpected Regex group replacement"),
+            }
+        }
+    }
+
     /// Apply the template to the given RE single match.
     pub fn apply_match(&self, m: &Match) -> Vec<u8> {
         let mut result = Vec::new();

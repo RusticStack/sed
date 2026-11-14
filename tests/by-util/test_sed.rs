@@ -3436,6 +3436,56 @@ fn in_place_edit_separate_backup() -> std::io::Result<()> {
 }
 
 #[test]
+fn in_place_edit_error_preserves_original_and_cleans_temp() -> std::io::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("input.txt");
+    std::fs::write(&path, "hello\n")?;
+
+    let missing_out = dir.path().join("no_such_dir").join("out.txt");
+    let w_cmd = format!("w {}", missing_out.display());
+    new_ucmd!()
+        .args(&["-i", "-e", "s/hello/world/", "-e", &w_cmd])
+        .arg(&path)
+        .fails();
+
+    assert_eq!(std::fs::read_to_string(&path)?, "hello\n");
+    let entries: Vec<_> = std::fs::read_dir(dir.path())?
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, vec![std::ffi::OsString::from("input.txt")]);
+    Ok(())
+}
+
+#[test]
+fn in_place_edit_relative_and_readonly() -> std::io::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("rel.txt");
+    std::fs::write(&path, "hello\n")?;
+
+    let mut perms = std::fs::metadata(&path)?.permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&path, perms)?;
+
+    new_ucmd!()
+        .current_dir(dir.path())
+        .args(&["-i", "s/hello/world/", "rel.txt"])
+        .succeeds();
+
+    assert_eq!(std::fs::read_to_string(&path)?, "world\n");
+    let new_perms = std::fs::metadata(&path)?.permissions();
+    assert!(new_perms.readonly());
+
+    #[cfg(windows)]
+    {
+        let mut writable = new_perms;
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        std::fs::set_permissions(&path, writable)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn join_lines_quiet_separate() -> std::io::Result<()> {
     let (_dir, path1, path2) = two_inputs("a1\na2\na3\n", "b1\nb2\nb3\n")?;
 

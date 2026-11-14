@@ -306,6 +306,15 @@ fn execute_pattern_as_shell_command(
     Ok(())
 }
 
+/// Size the result of a substitution for the line plus some growth the
+/// first time a match is found, so it never reallocates in the common case.
+#[inline]
+fn reserve_result(result: &mut Vec<u8>, line_len: usize) {
+    if result.capacity() == 0 {
+        result.reserve(line_len + 32);
+    }
+}
+
 /// Perform the specified RE replacement in the provided pattern space.
 fn substitute(
     pattern: &mut IOChunk,
@@ -332,6 +341,7 @@ fn substitute(
             match regex.find(pattern) {
                 Err(e) => Err(e),
                 Ok(Some(m)) => {
+                    reserve_result(&mut result, text.len());
                     result.extend_from_slice(&text[last_end..m.start()]);
 
                     let replacement = sub.replacement.apply_match(&m);
@@ -350,6 +360,7 @@ fn substitute(
                 Err(e) => Err(e),
                 Ok(Some(caps)) => {
                     let m = caps.get(0)?.unwrap();
+                    reserve_result(&mut result, text.len());
                     result.extend_from_slice(&text[last_end..m.start()]);
 
                     let replacement = sub.replacement.apply_captures(command, &caps)?;
@@ -360,6 +371,30 @@ fn substitute(
                 }
                 Ok(None) => Ok(()), // No match
             }
+        }
+
+        (_, _, 0) if regex.has_spans() => 'spans: {
+            // Example: s/o+/0/g with -E: no capture group in the replacement, so
+            // the spans are enough and no capture storage is allocated per match.
+            let Some(spans) = regex.find_spans(pattern) else {
+                break 'spans Ok(());
+            };
+            for (start, end) in spans {
+                count += 1;
+                reserve_result(&mut result, text.len());
+                result.extend_from_slice(&text[last_end..start]);
+                if count == sub.occurrence || (sub.global && count > sub.occurrence) {
+                    sub.replacement.append_match(&text[start..end], &mut result);
+                    replaced = true;
+                } else {
+                    result.extend_from_slice(&text[start..end]);
+                }
+                last_end = end;
+                if !sub.global && count == sub.occurrence {
+                    break;
+                }
+            }
+            Ok(())
         }
 
         (_, _, _) => {
@@ -376,6 +411,7 @@ fn substitute(
                     let m = caps.get(0)?.unwrap();
 
                     // Always write the unmatched text before this match.
+                    reserve_result(&mut result, text.len());
                     result.extend_from_slice(&text[last_end..m.start()]);
 
                     if count == sub.occurrence || (sub.global && count > sub.occurrence) {
@@ -1057,6 +1093,9 @@ pub fn process_all_files(
             output.write_line(&pending, has_newline)?;
         }
 
+        // Drop the input reader before in_place.end() so Windows does not
+        // hold an open handle on `path` during the atomic replacement.
+        drop(reader);
         in_place.end()?;
 
         if context.stop_processing {

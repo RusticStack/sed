@@ -32,6 +32,18 @@ pub struct InPlace {
     pub follow_symlinks: bool,
     pub temp_file: Option<NamedTempFile>,
     pub original_path: Option<PathBuf>,
+    original_permissions: Option<fs::Permissions>,
+}
+
+impl Drop for InPlace {
+    fn drop(&mut self) {
+        if self.temp_file.is_some() {
+            // Close the reopened output handle before dropping NamedTempFile
+            // so the unpersisted temp file can always be deleted on Windows.
+            self.output = OutputBuffer::new(Box::new(stdout()));
+            drop(self.temp_file.take());
+        }
+    }
 }
 
 impl InPlace {
@@ -46,6 +58,7 @@ impl InPlace {
             follow_symlinks: context.follow_symlinks,
             temp_file: None,
             original_path: None,
+            original_permissions: None,
         }
     }
 
@@ -88,26 +101,29 @@ impl InPlace {
             ));
         }
 
-        let dir = file_name.parent().unwrap_or_else(|| Path::new("."));
+        let dir = file_name
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         let temp_file = NamedTempFile::new_in(dir)
             .map_err_context(|| format!("error creating temporary file in {}", dir.quote()))?;
 
-        // TODO: On Unix use fchown(metadata.{uid,dig}) and fchmod(mode)
-        // on let fd = temp_file.as_file().as_raw_fd() when uucore::libc
-        // support them.
+        // TODO: On Unix use fchown(metadata.{uid,gid}) when uucore::libc supports it.
         #[cfg(unix)]
-        {
-            let mode = metadata.mode() & 0o7777;
-            let perms = fs::Permissions::from_mode(mode);
-            fs::set_permissions(temp_file.path(), perms)?;
-        }
+        let perms = fs::Permissions::from_mode(metadata.mode() & 0o7777);
+        #[cfg(not(unix))]
+        let perms = metadata.permissions();
 
-        let output = OutputBuffer::new(Box::new(
-            temp_file.reopen().expect("reopening NamedTempFile"),
-        ));
-        self.output = output;
+        let reopened = temp_file.reopen().map_err_context(|| {
+            format!(
+                "error reopening temporary file {}",
+                temp_file.path().quote()
+            )
+        })?;
+        self.output = OutputBuffer::new(Box::new(reopened));
         self.temp_file = Some(temp_file);
         self.original_path = Some(file_name.to_path_buf());
+        self.original_permissions = Some(perms);
 
         Ok(&mut self.output)
     }
@@ -120,8 +136,20 @@ impl InPlace {
             return Ok(());
         }
 
+        // Close our reopened write handle before renaming/persisting the temp file.
+        self.output = OutputBuffer::new(Box::new(stdout()));
+
         let orig = self.original_path.take().expect("original_path unset");
         let temp = self.temp_file.take().expect("temp_file unset");
+        let orig_perms = self.original_permissions.take();
+
+        // Close the primary handle on the temporary file before replacing `orig`.
+        let temp_path = temp.into_temp_path();
+
+        #[cfg(unix)]
+        if let Some(ref perms) = orig_perms {
+            fs::set_permissions(&temp_path, perms.clone())?;
+        }
 
         // Backup original if suffix is provided
         if let Some(ref suffix) = self.in_place_suffix {
@@ -145,33 +173,82 @@ impl InPlace {
                     backup_path.quote()
                 )
             })?;
-        } else {
-            #[cfg(windows)]
-            // On Windows delete the original file for temp.persist to work
-            if orig.exists() {
-                fs::remove_file(&orig).map_err_context(|| {
-                    format!("error removing original input file {}", orig.quote())
-                })?;
-            }
         }
 
-        // Atomically replace the original
-        match temp.persist(&orig) {
-            Ok(_) => {}
-            Err(e) => {
-                return Err(UIoError::new(
-                    e.error.kind(),
-                    format!(
-                        "error persisting temporary file {} to {}",
-                        e.file.path().quote(),
-                        orig.quote()
-                    ),
-                ));
-            }
-        }
+        persist_temp_file(
+            temp_path,
+            &orig,
+            orig_perms.as_ref(),
+            self.in_place_suffix.is_none(),
+        )?;
 
         Ok(())
     }
+}
+
+/// Atomically persist `temp_path` onto `orig` and restore permissions where needed.
+fn persist_temp_file(
+    temp_path: tempfile::TempPath,
+    orig: &Path,
+    orig_perms: Option<&fs::Permissions>,
+    target_exists: bool,
+) -> UResult<()> {
+    let persist_err = match temp_path.persist(orig) {
+        Ok(()) => {
+            #[cfg(windows)]
+            if let Some(perms) = orig_perms
+                && perms.readonly()
+            {
+                // tempfile::persist resets Windows attributes to FILE_ATTRIBUTE_NORMAL.
+                fs::set_permissions(orig, perms.clone())?;
+            }
+            return Ok(());
+        }
+        Err(e) => e,
+    };
+
+    #[cfg(windows)]
+    if target_exists
+        && persist_err.error.kind() == std::io::ErrorKind::PermissionDenied
+        && let Some(perms) = orig_perms
+        && perms.readonly()
+    {
+        // MoveFileExW(MOVEFILE_REPLACE_EXISTING) rejects a read-only target;
+        // clear the attribute without deleting `orig`, replace atomically, then restore.
+        let mut writable = perms.clone();
+        #[allow(clippy::permissions_set_readonly_false)]
+        writable.set_readonly(false);
+        if fs::set_permissions(orig, writable).is_ok() {
+            match persist_err.path.persist(orig) {
+                Ok(()) => {
+                    fs::set_permissions(orig, perms.clone())?;
+                    return Ok(());
+                }
+                Err(retry_err) => {
+                    let _ = fs::set_permissions(orig, perms.clone());
+                    return Err(UIoError::new(
+                        retry_err.error.kind(),
+                        format!(
+                            "error persisting temporary file {} to {}",
+                            retry_err.path.quote(),
+                            orig.quote()
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    let _ = target_exists;
+    let _ = orig_perms;
+    Err(UIoError::new(
+        persist_err.error.kind(),
+        format!(
+            "error persisting temporary file {} to {}",
+            persist_err.path.quote(),
+            orig.quote()
+        ),
+    ))
 }
 
 #[cfg(test)]
@@ -301,5 +378,64 @@ mod tests {
         let mut inplace = InPlace::new(ctx);
         let _buf = inplace.begin(Path::new("fake.txt")).unwrap();
         assert!(inplace.end().is_ok());
+    }
+
+    #[test]
+    fn test_in_place_writes_temp_until_end_and_cleans_up_on_drop() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.child("file.txt");
+        write_original(file.path(), "original\n");
+
+        let mut ctx = minimal_context();
+        ctx.in_place = true;
+
+        {
+            let mut inplace = InPlace::new(ctx);
+            let buf = inplace.begin(file.path()).unwrap();
+            writeln!(buf, "partial").unwrap();
+            buf.flush().unwrap();
+
+            // Original is untouched while editing; temp file lives in same dir.
+            assert_eq!(read_file(file.path()), "original\n");
+            let count = fs::read_dir(temp.path()).unwrap().count();
+            assert_eq!(count, 2);
+        }
+
+        // Dropped without end(): original intact and temp file removed.
+        assert_eq!(read_file(file.path()), "original\n");
+        let entries: Vec<_> = fs::read_dir(temp.path()).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn test_in_place_preserves_readonly_permissions() {
+        let temp = TempDir::new().unwrap();
+        let file = temp.child("readonly.txt");
+        write_original(file.path(), "original\n");
+
+        let mut perms = fs::metadata(file.path()).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(file.path(), perms).unwrap();
+
+        let mut ctx = minimal_context();
+        ctx.in_place = true;
+
+        let mut inplace = InPlace::new(ctx);
+        let buf = inplace.begin(file.path()).unwrap();
+        writeln!(buf, "updated").unwrap();
+        inplace.end().unwrap();
+
+        assert_eq!(read_file(file.path()), "updated\n");
+        let new_perms = fs::metadata(file.path()).unwrap().permissions();
+        assert!(new_perms.readonly());
+
+        // Clear readonly so TempDir cleanup succeeds on Windows.
+        #[cfg(windows)]
+        {
+            let mut writable = new_perms;
+            #[allow(clippy::permissions_set_readonly_false)]
+            writable.set_readonly(false);
+            fs::set_permissions(file.path(), writable).unwrap();
+        }
     }
 }
