@@ -1275,6 +1275,33 @@ fn test_posix_keeps_posix_regex_constructs() {
 }
 
 #[test]
+fn test_buffer_start_and_end_anchors() {
+    // \` and \' match only at the start and end of the pattern space,
+    // also with the M flag, in both BRE and ERE.
+    for mode in [None, Some("-E")] {
+        for (script, input, expected) in [
+            (r"s/\`./X/g", "ab\ncd\n", "Xb\nXd\n"),
+            (r"N;s/\`/>/Mg;s/\'/</Mg", "ab\ncd\n", ">ab\ncd<\n"),
+            (r"s/\`a/X/;s/a\'/Y/", "ab\nca\n", "Xb\ncY\n"),
+        ] {
+            let mut ucmd = new_ucmd!();
+            if let Some(flag) = mode {
+                ucmd.arg(flag);
+            }
+            ucmd.args(&["-e", script])
+                .pipe_in(input)
+                .succeeds()
+                .stdout_is(expected);
+        }
+    }
+    new_ucmd!()
+        .args(&["-E", "-e", r"s/\`(a|c)/X/;s/(a|b)\'/Y/"])
+        .pipe_in("ab\nca\n")
+        .succeeds()
+        .stdout_is("XY\nXY\n");
+}
+
+#[test]
 fn test_posix_keeps_gnu_character_escapes() {
     // The character escapes are GNU extensions, but GNU sed keeps them under --posix.
     for script in [r"s/\x61/X/", r"s/\o141/X/", r"s/\d097/X/"] {
