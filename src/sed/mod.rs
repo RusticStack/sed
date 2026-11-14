@@ -185,10 +185,12 @@ pub fn uu_app() -> Command {
         .about(ABOUT)
         .override_usage(format_usage(USAGE))
         // Skua: the usage line first, as Git Bash's sed `--help` starts.
-        .help_template("{usage-heading} {usage}
+        .help_template(
+            "{usage-heading} {usage}
 {about}
 
-{all-args}{after-help}")
+{all-args}{after-help}",
+        )
         .args_override_self(true)
         .infer_long_args(true)
         .args([
