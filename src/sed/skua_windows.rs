@@ -16,10 +16,10 @@ use std::path::{Path, PathBuf};
 /// Maps a file name written in a script the way MSYS sed in Git Bash resolves it. Other names,
 /// and every name off Windows, are returned unchanged.
 pub fn script_path(path: PathBuf) -> PathBuf {
-    if cfg!(windows) {
-        if let Some(mapped) = path.to_str().and_then(msys_path) {
-            return mapped;
-        }
+    if cfg!(windows)
+        && let Some(mapped) = path.to_str().and_then(msys_path)
+    {
+        return mapped;
     }
     path
 }
@@ -28,15 +28,15 @@ fn msys_path(s: &str) -> Option<PathBuf> {
     if s == "/dev/null" {
         return Some(PathBuf::from("NUL"));
     }
-    if let Some(rest) = s.strip_prefix("/tmp") {
-        if rest.is_empty() || rest.starts_with('/') {
-            let mut out = std::env::temp_dir();
-            let rest = rest.trim_start_matches('/');
-            if !rest.is_empty() {
-                out.push(rest.replace('/', "\\"));
-            }
-            return Some(out);
+    if let Some(rest) = s.strip_prefix("/tmp")
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        let mut out = std::env::temp_dir();
+        let rest = rest.trim_start_matches('/');
+        if !rest.is_empty() {
+            out.push(rest.replace('/', "\\"));
         }
+        return Some(out);
     }
     let bytes = s.as_bytes();
     if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
