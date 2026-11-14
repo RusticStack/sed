@@ -16,7 +16,7 @@ readme = "README.md"
 keywords = ["sed", "uutils", "cross-platform", "cli", "utility"]
 categories = ["command-line-utilities"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.100.0"
 
 build = "build.rs"
 
